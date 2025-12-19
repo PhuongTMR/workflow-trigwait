@@ -1,0 +1,96 @@
+name: 'Trigger Workflow and Wait'
+description: 'This action triggers a workflow in another repository and waits for the result.'
+author: 'Convictional'
+branding:
+  icon: 'arrow-right'
+  color: 'yellow'
+inputs:
+  owner:
+    description: "The owner of the repository where the workflow is contained."
+    required: true
+  repo:
+    description: "The repository where the workflow is contained."
+    required: true
+  github_token:
+    description: "The Github access token with access to the repository."
+    required: true
+  workflow_file_name:
+    description: "The workflow file name (e.g., deploy.yml)."
+    required: true
+  ref:
+    description: 'The reference of the workflow run (branch, tag, or commit SHA). Default: main'
+    required: false
+  wait_interval:
+    description: "Seconds between status checks (adaptive: slower when queued, faster when running). Default: 10"
+    required: false
+  trigger_timeout:
+    description: "Seconds to wait for the triggered workflow run to appear. Default: 120"
+    required: false
+  client_payload:
+    description: 'Inputs to pass to the workflow as JSON string'
+    required: false
+  propagate_failure:
+    description: 'Fail current job if downstream job fails. Default: true'
+    required: false
+  trigger_workflow:
+    description: 'Trigger the specified workflow. Default: true'
+    required: false
+  wait_workflow:
+    description: 'Wait for workflow to finish. Default: true'
+    required: false
+  distinct_id_name:
+    description: "Input field name for workflow correlation (e.g., 'id'). Enables reliable run identification when set."
+    required: false
+outputs:
+  workflow_id:
+    description: The ID of the workflow that was triggered by this action
+    value: ${{ steps.run.outputs.workflow_id }}
+  workflow_url:
+    description: The URL of the workflow that was triggered by this action
+    value: ${{ steps.run.outputs.workflow_url }}
+  conclusion:
+    description: Conclusion of the job (success, failure, cancelled, etc.)
+    value: ${{ steps.run.outputs.conclusion }}
+  distinct_id:
+    description: The unique identifier used to correlate this trigger with the workflow run
+    value: ${{ steps.run.outputs.distinct_id }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Download and run workflow-trigwait
+      id: run
+      shell: bash
+      env:
+        INPUT_OWNER: ${{ inputs.owner }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_WORKFLOW_FILE_NAME: ${{ inputs.workflow_file_name }}
+        INPUT_REF: ${{ inputs.ref }}
+        INPUT_WAIT_INTERVAL: ${{ inputs.wait_interval }}
+        INPUT_TRIGGER_TIMEOUT: ${{ inputs.trigger_timeout }}
+        INPUT_CLIENT_PAYLOAD: ${{ inputs.client_payload }}
+        INPUT_PROPAGATE_FAILURE: ${{ inputs.propagate_failure }}
+        INPUT_TRIGGER_WORKFLOW: ${{ inputs.trigger_workflow }}
+        INPUT_WAIT_WORKFLOW: ${{ inputs.wait_workflow }}
+        INPUT_DISTINCT_ID_NAME: ${{ inputs.distinct_id_name }}
+      run: |
+        # ♻️ Determine OS and architecture for trigwait binary
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+        case $ARCH in
+          x86_64) ARCH="amd64" ;;
+          aarch64|arm64) ARCH="arm64" ;;
+        esac
+
+        # Run the pre-built binary
+        BINARY="${{ github.action_path }}/dist/workflow-trigwait-${OS}-${ARCH}"
+        if [[ ! -f "$BINARY" ]]; then
+          echo "Binary not found: $BINARY"
+          echo "Building from source..."
+          cd "${{ github.action_path }}"
+          go build -o /tmp/workflow-trigwait ./cmd/main.go
+          BINARY="/tmp/workflow-trigwait"
+        fi
+
+        chmod +x "$BINARY"
+        "$BINARY"

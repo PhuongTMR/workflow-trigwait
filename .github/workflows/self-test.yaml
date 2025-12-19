@@ -1,0 +1,33 @@
+name: Self-test
+run-name: Self-test [${{ inputs.distinct_id }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        type: string
+        default: 'success'
+        description: Test mode (success or failure)
+      sleep_seconds:
+        type: string
+        default: '10'
+        description: Seconds to sleep
+      distinct_id:
+        type: string
+        default: ''
+        description: Distinct ID
+
+jobs:
+  wait:
+    name: Wait
+    runs-on: ubuntu-latest
+    steps:
+    - name: Print distinct_id
+      run: echo "Distinct ID ${{ inputs.distinct_id }}"
+    - name: Sleep
+      run: sleep ${{ inputs.sleep_seconds || '10' }}
+    - name: Fail if requested
+      if: inputs.test_mode == 'failure'
+      run: exit 1
+    - name: Success
+      run: echo "Test completed successfully"

@@ -1,0 +1,9 @@
+.DS_Store
+TEMP.md
+.idea
+
+# Go build artifacts
+coverage.out
+
+# Local build output (not dist/)
+/trigger-workflow

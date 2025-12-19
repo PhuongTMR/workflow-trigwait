@@ -1,0 +1,207 @@
+name: Build
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  push:
+    paths-ignore:
+      - '**.md'
+    branches:
+      - master
+    tags:
+      - v**
+
+jobs:
+  test-unit:
+    name: Run unit tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        cache: false
+    - name: Run tests
+      run: go test -v -race -coverprofile=coverage.out ./cmd/...
+    - name: Check coverage
+      run: go tool cover -func=coverage.out
+
+  build-binaries:
+    name: Build binaries
+    needs: test-unit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        cache: false
+    - name: Install UPX
+      run: sudo apt-get update && sudo apt-get install -y upx
+    - name: Build all platforms
+      run: ./scripts/build.sh
+    - name: Upload binaries for tests
+      uses: actions/upload-artifact@v4
+      with:
+        name: binaries
+        path: dist/workflow-trigwait-*
+    - name: Commit binaries
+      if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add dist/
+        git diff --staged --quiet || git commit -m "Build binaries [skip ci]"
+        git push
+
+  test-trigger-and-wait:
+    name: Test trigger and wait (success)
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+      - name: Trigger workflow and wait for success
+        id: trigger
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: workflow-trigwait
+          ref: 'master'
+          github_token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+          workflow_file_name: self-test.yaml
+          client_payload: '{"test_mode": "success", "sleep_seconds": "10"}'
+          wait_interval: 5
+          trigger_timeout: 60
+          distinct_id_name: "distinct_id"
+      - name: Verify outputs
+        run: |
+          echo "Workflow ID: ${{ steps.trigger.outputs.workflow_id }}"
+          echo "Workflow URL: ${{ steps.trigger.outputs.workflow_url }}"
+          echo "Conclusion: ${{ steps.trigger.outputs.conclusion }}"
+
+          # Verify workflow_id is a number
+          if ! [[ "${{ steps.trigger.outputs.workflow_id }}" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: workflow_id is not a valid number"
+            exit 1
+          fi
+
+          # Verify workflow_url contains the workflow_id
+          if [[ "${{ steps.trigger.outputs.workflow_url }}" != *"${{ steps.trigger.outputs.workflow_id }}"* ]]; then
+            echo "ERROR: workflow_url does not contain workflow_id"
+            exit 1
+          fi
+
+          # Verify conclusion is success
+          if [[ "${{ steps.trigger.outputs.conclusion }}" != "success" ]]; then
+            echo "ERROR: conclusion is not success"
+            exit 1
+          fi
+
+          echo "All output validations passed!"
+
+  test-trigger-only:
+    name: Test trigger only (no wait)
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+      - name: Trigger workflow without waiting
+        id: trigger
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: workflow-trigwait
+          ref: 'master'
+          github_token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+          workflow_file_name: self-test.yaml
+          client_payload: '{"test_mode": "success", "sleep_seconds": "5"}'
+          trigger_timeout: 60
+          wait_workflow: false
+          distinct_id_name: "distinct_id"
+      - name: Verify workflow was triggered
+        run: |
+          echo "Workflow ID: ${{ steps.trigger.outputs.workflow_id }}"
+          if ! [[ "${{ steps.trigger.outputs.workflow_id }}" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: workflow_id is not a valid number"
+            exit 1
+          fi
+          echo "Trigger-only test passed!"
+
+  test-failure-propagation:
+    name: Test failure propagation
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+      - name: Trigger failing workflow (expect failure)
+        id: trigger
+        continue-on-error: true
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: workflow-trigwait
+          ref: 'master'
+          github_token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+          workflow_file_name: self-test.yaml
+          client_payload: '{"test_mode": "failure", "sleep_seconds": "5"}'
+          wait_interval: 5
+          trigger_timeout: 60
+          propagate_failure: true
+          distinct_id_name: "distinct_id"
+      - name: Verify failure was propagated
+        run: |
+          if [[ "${{ steps.trigger.outcome }}" == "success" ]]; then
+            echo "ERROR: Expected failure but got success"
+            exit 1
+          fi
+          echo "Failure propagation test passed!"
+
+  test-no-failure-propagation:
+    name: Test no failure propagation
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+      - name: Trigger failing workflow (don't propagate)
+        id: trigger
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: workflow-trigwait
+          ref: 'master'
+          github_token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+          workflow_file_name: self-test.yaml
+          client_payload: '{"test_mode": "failure", "sleep_seconds": "5"}'
+          wait_interval: 5
+          trigger_timeout: 60
+          propagate_failure: false
+          distinct_id_name: "distinct_id"
+      - name: Verify step succeeded despite downstream failure
+        run: |
+          echo "Conclusion: ${{ steps.trigger.outputs.conclusion }}"
+          if [[ "${{ steps.trigger.outputs.conclusion }}" == "success" ]]; then
+            echo "ERROR: Expected failure conclusion but got success"
+            exit 1
+          fi
+          echo "No-propagation test passed - step succeeded despite downstream failure!"
