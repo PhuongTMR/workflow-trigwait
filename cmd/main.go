@@ -215,11 +215,11 @@ func triggerWorkflow(config *Config) (int64, error) {
 		fmt.Printf(" [%s]", config.DistinctID)
 		setOutput("distinct_id", config.DistinctID)
 	}
+	fmt.Println()
 	if len(config.ClientPayload) > 0 {
 		inputsJSON, _ := json.Marshal(config.ClientPayload)
-		fmt.Printf("   Inputs: %s", string(inputsJSON))
+		fmt.Printf("   Inputs: %s\n", string(inputsJSON))
 	}
-	fmt.Println()
 
 	// Trigger the workflow
 	path := fmt.Sprintf("workflows/%s/dispatches", config.WorkflowFileName)
@@ -306,8 +306,8 @@ func findWorkflowRun(config *Config, startTime time.Time) (int64, error) {
 func waitForWorkflow(config *Config, runID int64) error {
 	workflowURL := fmt.Sprintf("%s/%s/%s/actions/runs/%d", config.GitHubServerURL, config.Owner, config.Repo, runID)
 
-	fmt.Printf("⏳ Waiting for workflow completion...")
-	fmt.Printf("   URL: %s", workflowURL)
+	fmt.Printf("\n⏳ Waiting for workflow completion...\n")
+	fmt.Printf("   URL: %s\n", workflowURL)
 
 	setOutput("workflow_id", strconv.FormatInt(runID, 10))
 	setOutput("workflow_url", workflowURL)
@@ -337,9 +337,9 @@ func waitForWorkflow(config *Config, runID int64) error {
 		if run.Status == "completed" {
 			fmt.Printf("\r")
 			if run.Conclusion == "success" {
-				fmt.Printf("   ✅ Completed successfully in %v", elapsed)
+				fmt.Printf("   ✅ Completed successfully in %v\n", elapsed)
 			} else {
-				fmt.Printf("   ❌ Failed with status: %s (duration: %v)", run.Conclusion, elapsed)
+				fmt.Printf("   ❌ Failed with status: %s (duration: %v)\n", run.Conclusion, elapsed)
 			}
 
 			if run.Conclusion != "success" && config.PropagateFailure {
@@ -363,8 +363,8 @@ func waitForWorkflow(config *Config, runID int64) error {
 			fmt.Printf("\r   %s Status: %s (elapsed: %v)", statusIcon, statusText, elapsed)
 			lastStatus = run.Status
 			lastPrintTime = time.Now()
-		} else if time.Since(lastPrintTime) > 30*time.Second {
-			// Update elapsed time every 30 seconds even if status hasn't changed
+		} else if time.Since(lastPrintTime) > 5*time.Minute {
+			// Update elapsed time every 5 minutes if status hasn't changed
 			statusText := "running"
 			if run.Status == "queued" || run.Status == "waiting" || run.Status == "pending" {
 				statusText = "queued"
@@ -455,5 +455,5 @@ func setOutput(name, value string) {
 	}
 	defer f.Close()
 
-	fmt.Fprintf(f, "%s=%s", name, value)
+	fmt.Fprintf(f, "%s=%s\n", name, value)
 }
