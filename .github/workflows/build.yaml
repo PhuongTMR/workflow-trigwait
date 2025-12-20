@@ -27,48 +27,80 @@ jobs:
     - name: Check coverage
       run: go tool cover -func=coverage.out
 
-  build-binaries:
-    name: Build binaries
+  create-prerelease:
+    name: Create pre-release
     needs: test-unit
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
     - uses: actions/checkout@v4
       with:
-        token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
-    - uses: actions/setup-go@v5
-      with:
-        go-version: '1.21'
-        cache: false
-    - name: Install UPX
-      run: sudo apt-get update && sudo apt-get install -y upx
-    - name: Build all platforms
-      run: ./scripts/build.sh
-    - name: Upload binaries for tests
-      uses: actions/upload-artifact@v4
-      with:
-        name: binaries
-        path: dist/workflow-trigwait-*
-    - name: Commit binaries
-      if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        fetch-depth: 0
+    - name: Get next version
+      id: version
       run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add dist/
-        git diff --staged --quiet || git commit -m "Build binaries [skip ci]"
-        git push
+        # Get latest version tag
+        latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+$' | head -1 || echo "v1.0")
+        echo "Latest tag: $latest_tag"
+
+        # Extract major and minor version
+        version_num=${latest_tag#v}
+        major=${version_num%.*}
+        minor=${version_num#*.}
+
+        # Increment minor version
+        next_minor=$((minor + 1))
+        next_version="v${major}.${next_minor}"
+
+        echo "Next version: $next_version"
+        echo "version=$next_version" >> $GITHUB_OUTPUT
+    - name: Create pre-release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+
+        # Create release notes
+        cat > release_notes.md <<EOF
+        ## Pre-release $VERSION
+
+        This is an automated pre-release created from the latest master branch.
+
+        ### Recent Changes
+        $(git log --oneline -5 --no-decorate)
+
+        ### Installation
+        This pre-release does not include binaries yet. To use:
+        1. Review the changes
+        2. If ready, manually build binaries locally with \`./scripts/build.sh\`
+        3. Push binaries to master
+        4. Create a full release from this pre-release
+        EOF
+
+        # Create pre-release
+        gh release create "$VERSION" \
+          --title "Pre-release $VERSION" \
+          --notes-file release_notes.md \
+          --prerelease \
+          --target master
 
   test-trigger-and-wait:
     name: Test trigger and wait (success)
-    needs: build-binaries
+    needs: test-unit
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-go@v5
         with:
-          name: binaries
-          path: dist/
+          go-version: '1.21'
+          cache: false
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+      - name: Build binaries for tests
+        run: ./scripts/build.sh
       - name: Trigger workflow and wait for success
         id: trigger
         uses: ./
@@ -110,14 +142,19 @@ jobs:
 
   test-trigger-only:
     name: Test trigger only (no wait)
-    needs: build-binaries
+    needs: test-unit
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-go@v5
         with:
-          name: binaries
-          path: dist/
+          go-version: '1.21'
+          cache: false
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+      - name: Build binaries for tests
+        run: ./scripts/build.sh
       - name: Trigger workflow without waiting
         id: trigger
         uses: ./
@@ -142,14 +179,19 @@ jobs:
 
   test-failure-propagation:
     name: Test failure propagation
-    needs: build-binaries
+    needs: test-unit
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-go@v5
         with:
-          name: binaries
-          path: dist/
+          go-version: '1.21'
+          cache: false
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+      - name: Build binaries for tests
+        run: ./scripts/build.sh
       - name: Trigger failing workflow (expect failure)
         id: trigger
         continue-on-error: true
@@ -175,14 +217,19 @@ jobs:
 
   test-no-failure-propagation:
     name: Test no failure propagation
-    needs: build-binaries
+    needs: test-unit
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-go@v5
         with:
-          name: binaries
-          path: dist/
+          go-version: '1.21'
+          cache: false
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+      - name: Build binaries for tests
+        run: ./scripts/build.sh
       - name: Trigger failing workflow (don't propagate)
         id: trigger
         uses: ./
