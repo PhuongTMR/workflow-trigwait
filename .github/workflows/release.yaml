@@ -1,0 +1,249 @@
+name: Release
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  push:
+    paths-ignore:
+      - '**.md'
+    branches:
+      - master
+    tags:
+      - v**
+
+jobs:
+  test-unit:
+    name: Run unit tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        cache: false
+    - name: Run tests
+      run: go test -v -race -coverprofile=coverage.out ./cmd/...
+    - name: Check coverage
+      run: go tool cover -func=coverage.out
+
+  test-trigger-and-wait:
+    name: Test trigger and wait (success)
+    needs: test-unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+      - name: Build binaries for tests
+        run: ./scripts/build.sh
+      - name: Trigger workflow and wait for success
+        id: trigger
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: workflow-trigwait
+          ref: 'master'
+          github_token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+          workflow_file_name: self-test.yaml
+          client_payload: '{"test_mode": "success", "sleep_seconds": "10"}'
+          wait_interval: 5
+          trigger_timeout: 60
+          distinct_id_name: "distinct_id"
+      - name: Verify outputs
+        run: |
+          echo "Workflow ID: ${{ steps.trigger.outputs.workflow_id }}"
+          echo "Workflow URL: ${{ steps.trigger.outputs.workflow_url }}"
+          echo "Conclusion: ${{ steps.trigger.outputs.conclusion }}"
+
+          # Verify workflow_id is a number
+          if ! [[ "${{ steps.trigger.outputs.workflow_id }}" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: workflow_id is not a valid number"
+            exit 1
+          fi
+
+          # Verify workflow_url contains the workflow_id
+          if [[ "${{ steps.trigger.outputs.workflow_url }}" != *"${{ steps.trigger.outputs.workflow_id }}"* ]]; then
+            echo "ERROR: workflow_url does not contain workflow_id"
+            exit 1
+          fi
+
+          # Verify conclusion is success
+          if [[ "${{ steps.trigger.outputs.conclusion }}" != "success" ]]; then
+            echo "ERROR: conclusion is not success"
+            exit 1
+          fi
+          echo "All output validations passed!"
+
+  test-trigger-only:
+    name: Test trigger only (no wait)
+    needs: test-unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+      - name: Build binaries for tests
+        run: ./scripts/build.sh
+      - name: Trigger workflow without waiting
+        id: trigger
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: workflow-trigwait
+          ref: 'master'
+          github_token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+          workflow_file_name: self-test.yaml
+          client_payload: '{"test_mode": "success", "sleep_seconds": "5"}'
+          trigger_timeout: 60
+          wait_workflow: false
+          distinct_id_name: "distinct_id"
+      - name: Verify workflow was triggered
+        run: |
+          echo "Workflow ID: ${{ steps.trigger.outputs.workflow_id }}"
+          if ! [[ "${{ steps.trigger.outputs.workflow_id }}" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: workflow_id is not a valid number"
+            exit 1
+          fi
+          echo "Trigger-only test passed!"
+
+  test-failure-propagation:
+    name: Test failure propagation
+    needs: test-unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+      - name: Build binaries for tests
+        run: ./scripts/build.sh
+      - name: Trigger failing workflow (expect failure)
+        id: trigger
+        continue-on-error: true
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: workflow-trigwait
+          ref: 'master'
+          github_token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+          workflow_file_name: self-test.yaml
+          client_payload: '{"test_mode": "failure", "sleep_seconds": "5"}'
+          wait_interval: 5
+          trigger_timeout: 60
+          propagate_failure: true
+          distinct_id_name: "distinct_id"
+      - name: Verify failure was propagated
+        run: |
+          if [[ "${{ steps.trigger.outcome }}" == "success" ]]; then
+            echo "ERROR: Expected failure but got success"
+            exit 1
+          fi
+          echo "Failure propagation test passed!"
+
+  test-no-failure-propagation:
+    name: Test no failure propagation
+    needs: test-unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx
+      - name: Build binaries for tests
+        run: ./scripts/build.sh
+      - name: Trigger failing workflow (don't propagate)
+        id: trigger
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: workflow-trigwait
+          ref: 'master'
+          github_token: ${{ secrets.SECRET_PERSONAL_TOKEN }}
+          workflow_file_name: self-test.yaml
+          client_payload: '{"test_mode": "failure", "sleep_seconds": "5"}'
+          wait_interval: 5
+          trigger_timeout: 60
+          propagate_failure: false
+          distinct_id_name: "distinct_id"
+      - name: Verify step succeeded despite downstream failure
+        run: |
+          echo "Conclusion: ${{ steps.trigger.outputs.conclusion }}"
+          if [[ "${{ steps.trigger.outputs.conclusion }}" == "success" ]]; then
+            echo "ERROR: Expected failure conclusion but got success"
+            exit 1
+          fi
+          echo "No-propagation test passed - step succeeded despite downstream failure!"
+
+  create-prerelease:
+    name: Create pre-release
+    needs: [test-unit, test-trigger-and-wait, test-trigger-only, test-failure-propagation, test-no-failure-propagation]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Get next version
+      id: version
+      run: |
+        # Get latest version tag
+        latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+$' | head -1 || echo "v1.0")
+        echo "Latest tag: $latest_tag"
+
+        # Extract major and minor version
+        version_num=${latest_tag#v}
+        major=${version_num%.*}
+        minor=${version_num#*.}
+
+        # Increment minor version
+        next_minor=$((minor + 1))
+        next_version="v${major}.${next_minor}"
+
+        echo "Next version: $next_version"
+        echo "version=$next_version" >> $GITHUB_OUTPUT
+    - name: Create pre-release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+
+        # Create release notes
+        cat > release_notes.md <<EOF
+        ## Pre-release $VERSION
+
+        This is an automated pre-release created from the latest master branch.
+
+        ### Recent Changes
+        $(git log --oneline -5 --no-decorate)
+
+        ### Installation
+        This pre-release does not include binaries yet. To use:
+        1. Review the changes
+        2. If ready, manually build binaries locally with \`./scripts/build.sh\`
+        3. Push binaries to master
+        4. Create a full release from this pre-release
+        EOF
+
+        # Create pre-release
+        gh release create "$VERSION" \
+          --title "Pre-release $VERSION" \
+          --notes-file release_notes.md \
+          --prerelease \
+          --target master
