@@ -25,11 +25,6 @@ Welcome to the Workflow Trigger and Wait documentation!
   - Testing procedures
   - Pull request process
 
-- **[CLAUDE.md](../CLAUDE.md)** - Technical documentation for Claude Code
-  - Architecture overview
-  - Build process
-  - Development commands
-
 ## Quick Navigation
 
 ### Common Tasks
@@ -59,9 +54,8 @@ Welcome to the Workflow Trigger and Wait documentation!
 ```
 workflow-trigwait/
 ├── README.md                  # Overview and quick start
-├── CLAUDE.md                 # Technical architecture docs
-├── CONTRIBUTING.md           # Contribution guidelines
-├── LICENSE                   # License information
+├── CONTRIBUTING.md            # Contribution guidelines
+├── LICENSE                    # License information
 └── docs/
     ├── INDEX.md             # This file
     ├── USAGE_GUIDE.md       # Comprehensive usage guide

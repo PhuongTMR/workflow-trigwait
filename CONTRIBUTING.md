@@ -39,8 +39,7 @@ workflow-trigwait/
 ├── action.yml            # GitHub Action definition
 ├── Dockerfile            # Docker container (legacy)
 ├── go.mod                # Go module definition
-├── CLAUDE.md            # Claude Code documentation
-└── README.md            # Main documentation
+└── README.md             # Main documentation
 ```
 
 ## Development Setup
@@ -181,7 +180,6 @@ This project follows standard Go conventions:
 5. **Update documentation:**
    - README.md inputs table
    - docs/USAGE_GUIDE.md examples
-   - CLAUDE.md if relevant
 
 #### Fixing a Bug
 
