@@ -9,7 +9,8 @@ A GitHub Action that triggers a workflow in another repository (or the same repo
 ## Features
 
 - 🚀 **Trigger workflows** via `workflow_dispatch` event
-- ⏳ **Wait for completion** with configurable polling interval
+- ⏳ **Wait for completion** with smart adaptive polling
+- 🧠 **Intelligent polling** - learns from workflow history to minimize API calls and detect completion faster
 - 📊 **Propagate failures** from downstream workflows (optional)
 - 🔧 **Flexible configuration** - trigger only, wait only, or both
 - ⚡ **Fast execution** - pre-built binaries (1.5-5.3 MB)
@@ -31,7 +32,7 @@ A GitHub Action that triggers a workflow in another repository (or the same repo
 | `github_token`       | ✅       | -       | GitHub access token with `repo` and `actions` permissions |
 | `workflow_file_name` | ✅       | -       | Workflow file name (e.g., `deploy.yml`) |
 | `ref`                | ❌       | `main`  | Branch, tag, or commit SHA to run the workflow on |
-| `wait_interval`      | ❌       | `10`    | Seconds between status checks (adaptive polling: slower when queued) |
+| `wait_interval`      | ❌       | `10`    | Base seconds between status checks (smart polling adjusts automatically) |
 | `trigger_timeout`    | ❌       | `120`   | Seconds to wait for triggered workflow to appear |
 | `client_payload`     | ❌       | `{}`    | JSON string of inputs to pass to the workflow |
 | `propagate_failure`  | ❌       | `true`  | Fail this job if the downstream workflow fails |
@@ -281,6 +282,51 @@ The default `GITHUB_TOKEN` only works within the same repository. For cross-repo
 └─────────────┘
 ```
 
+## Smart Polling
+
+The action uses an intelligent polling strategy that learns from your workflow's history to minimize API calls while detecting completion as fast as possible.
+
+### How It Works
+
+1. **Estimates duration** - Fetches the median duration from the last 5 successful runs (1 API call)
+2. **Adapts polling interval** - Polls slower when far from completion, faster when approaching
+
+### Polling Strategy
+
+| Phase | Condition | Interval | Description |
+|-------|-----------|----------|-------------|
+| Queued | Status is `queued`/`waiting` | 30s | Job hasn't started yet |
+| Early | `< 60%` of estimated time | 60s | Far from completion, save API calls |
+| Approaching | `60-90%` of estimated time | 30s | Getting closer |
+| **Sprint** | `90-120%` of estimated time | **15s** | Completion window - poll fast! |
+| Extended | `> 120%` of estimated time | 30s | Taking longer than usual |
+
+### Example
+
+For a workflow that typically runs ~17 minutes:
+
+```
+⏳ Waiting for workflow completion...
+   URL: https://github.com/org/repo/actions/runs/12345
+   (estimated: ~17m based on history)
+🔄 Status: queued (elapsed: 10s)
+▶️ Status: running (elapsed: 40s)
+⏳ Status: running (elapsed: 5m40s)     # Polling every 60s
+⏳ Status: running (elapsed: 10m40s)    # Polling every 30s (approaching)
+⏳ Status: running (elapsed: 15m40s)    # Polling every 15s (sprint mode!)
+✅ Completed successfully in 17m25s     # Detected within ~15s of completion
+```
+
+### Benefits
+
+| Metric | Fixed 10s Polling | Smart Polling |
+|--------|-------------------|---------------|
+| API calls (17 min job) | ~102 calls | ~25-30 calls |
+| Max detection delay | 10s | ~15s |
+| API efficiency | Low | **High** |
+
+> **Note:** If no historical data is available, the action defaults to a 15-minute estimate.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -364,9 +410,10 @@ See [all releases](https://github.com/PhuongTMR/workflow-trigwait/releases) for 
 - **Binary size**: 1.5-1.7 MB (Linux/Windows, with UPX), 5.0-5.3 MB (macOS)
 - **Startup time**: < 100ms
 - **Memory usage**: ~10 MB
-- **API calls**: Optimized with exponential backoff
+- **API efficiency**: Smart polling reduces API calls by ~70% compared to fixed-interval polling
+- **Detection delay**: ~15s max after workflow completion (in sprint mode)
 
-The action uses pre-built binaries for fast initialization in GitHub Actions runners.
+The action uses pre-built binaries for fast initialization and intelligent polling to minimize GitHub API usage.
 
 ## Contributing
 

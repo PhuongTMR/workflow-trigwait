@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -303,6 +304,77 @@ func findWorkflowRun(config *Config, startTime time.Time) (int64, error) {
 	return 0, nil
 }
 
+// estimateWorkflowDuration fetches recent successful runs to predict typical duration
+func estimateWorkflowDuration(config *Config) time.Duration {
+	defaultEstimate := 15 * time.Minute
+
+	// Get last 5 successful runs of this workflow
+	path := fmt.Sprintf("workflows/%s/runs?status=success&per_page=5", config.WorkflowFileName)
+	respBody, err := apiRequest(config, "GET", path, nil)
+	if err != nil {
+		return defaultEstimate
+	}
+
+	var response struct {
+		WorkflowRuns []struct {
+			CreatedAt string `json:"created_at"`
+			UpdatedAt string `json:"updated_at"`
+		} `json:"workflow_runs"`
+	}
+
+	if err := json.Unmarshal(respBody, &response); err != nil || len(response.WorkflowRuns) == 0 {
+		return defaultEstimate
+	}
+
+	// Calculate durations from successful runs
+	var durations []time.Duration
+	for _, run := range response.WorkflowRuns {
+		createdAt, err1 := time.Parse(time.RFC3339, run.CreatedAt)
+		updatedAt, err2 := time.Parse(time.RFC3339, run.UpdatedAt)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		duration := updatedAt.Sub(createdAt)
+		if duration > 0 {
+			durations = append(durations, duration)
+		}
+	}
+
+	if len(durations) == 0 {
+		return defaultEstimate
+	}
+
+	// Return median duration for robustness against outliers
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	return durations[len(durations)/2]
+}
+
+// getSmartPollInterval returns adaptive poll interval based on estimated completion time
+func getSmartPollInterval(status string, elapsed, estimatedDuration time.Duration) time.Duration {
+	// For queued status, use longer intervals
+	if status == "queued" || status == "waiting" || status == "pending" {
+		return 30 * time.Second
+	}
+
+	// Calculate how close we are to estimated completion
+	completionRatio := float64(elapsed) / float64(estimatedDuration)
+
+	switch {
+	case completionRatio < 0.6:
+		// Far from completion - poll slowly (save API calls)
+		return 60 * time.Second
+	case completionRatio < 0.9:
+		// Approaching completion - medium speed
+		return 30 * time.Second
+	case completionRatio < 1.2:
+		// In the completion window - poll fast!
+		return 15 * time.Second
+	default:
+		// Taking longer than expected - back to medium
+		return 30 * time.Second
+	}
+}
+
 func waitForWorkflow(config *Config, runID int64) error {
 	workflowURL := fmt.Sprintf("%s/%s/%s/actions/runs/%d", config.GitHubServerURL, config.Owner, config.Repo, runID)
 
@@ -314,13 +386,14 @@ func waitForWorkflow(config *Config, runID int64) error {
 
 	startTime := time.Now()
 	lastStatus := ""
-	pollInterval := config.WaitInterval
 	lastPrintTime := time.Now()
 
-	// Poll for completion with adaptive intervals
-	for {
-		time.Sleep(pollInterval)
+	// Get estimated duration based on historical runs (1 API call)
+	estimatedDuration := estimateWorkflowDuration(config)
+	fmt.Printf("   (estimated: ~%v based on history)\n", estimatedDuration.Round(time.Minute))
 
+	// Poll for completion with smart adaptive intervals
+	for {
 		run, err := getWorkflowRun(config, runID)
 		if err != nil {
 			// Only show errors occasionally
@@ -328,6 +401,7 @@ func waitForWorkflow(config *Config, runID int64) error {
 				fmt.Fprintf(os.Stderr, "\r⚠ Error fetching status (retrying...)")
 				lastPrintTime = time.Now()
 			}
+			time.Sleep(config.WaitInterval)
 			continue
 		}
 
@@ -373,21 +447,10 @@ func waitForWorkflow(config *Config, runID int64) error {
 			lastPrintTime = time.Now()
 		}
 
-		// Adaptive polling: slower when queued, faster when in_progress
-		switch run.Status {
-		case "queued", "waiting", "pending":
-			pollInterval = maxDuration(config.WaitInterval, 30*time.Second)
-		case "in_progress":
-			pollInterval = config.WaitInterval
-		}
+		// Smart polling based on estimated duration
+		pollInterval := getSmartPollInterval(run.Status, elapsed, estimatedDuration)
+		time.Sleep(pollInterval)
 	}
-}
-
-func maxDuration(a, b time.Duration) time.Duration {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func getWorkflowRun(config *Config, runID int64) (*WorkflowRun, error) {
