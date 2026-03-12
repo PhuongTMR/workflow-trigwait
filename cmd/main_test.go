@@ -847,3 +847,189 @@ func BenchmarkLoadConfig(b *testing.B) {
 		loadConfig()
 	}
 }
+
+func TestGetSmartPollInterval(t *testing.T) {
+	estimatedDuration := 17 * time.Minute
+
+	tests := []struct {
+		name     string
+		status   string
+		elapsed  time.Duration
+		expected time.Duration
+	}{
+		{
+			name:     "queued status uses fixed 30s",
+			status:   "queued",
+			elapsed:  5 * time.Minute,
+			expected: 30 * time.Second,
+		},
+		{
+			name:     "waiting status uses fixed 30s",
+			status:   "waiting",
+			elapsed:  5 * time.Minute,
+			expected: 30 * time.Second,
+		},
+		{
+			name:     "pending status uses fixed 30s",
+			status:   "pending",
+			elapsed:  5 * time.Minute,
+			expected: 30 * time.Second,
+		},
+		{
+			name:     "in_progress at 0% - far from completion",
+			status:   "in_progress",
+			elapsed:  1 * time.Minute, // ~6% of 17 min
+			expected: 60 * time.Second,
+		},
+		{
+			name:     "in_progress at 50% - still far from completion",
+			status:   "in_progress",
+			elapsed:  8 * time.Minute, // ~47% of 17 min
+			expected: 60 * time.Second,
+		},
+		{
+			name:     "in_progress at 70% - approaching completion",
+			status:   "in_progress",
+			elapsed:  12 * time.Minute, // ~70% of 17 min
+			expected: 30 * time.Second,
+		},
+		{
+			name:     "in_progress at 95% - in completion window (sprint!)",
+			status:   "in_progress",
+			elapsed:  16 * time.Minute, // ~94% of 17 min
+			expected: 15 * time.Second,
+		},
+		{
+			name:     "in_progress at 100% - still in completion window",
+			status:   "in_progress",
+			elapsed:  17 * time.Minute, // 100% of 17 min
+			expected: 15 * time.Second,
+		},
+		{
+			name:     "in_progress at 110% - still in completion window",
+			status:   "in_progress",
+			elapsed:  19 * time.Minute, // ~112% of 17 min
+			expected: 15 * time.Second,
+		},
+		{
+			name:     "in_progress at 130% - taking longer than expected",
+			status:   "in_progress",
+			elapsed:  22 * time.Minute, // ~129% of 17 min
+			expected: 30 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getSmartPollInterval(tt.status, tt.elapsed, estimatedDuration)
+			if result != tt.expected {
+				t.Errorf("getSmartPollInterval(%q, %v, %v) = %v, want %v",
+					tt.status, tt.elapsed, estimatedDuration, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEstimateWorkflowDuration(t *testing.T) {
+	t.Run("returns median duration from successful runs", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			baseTime := time.Now()
+			response := struct {
+				WorkflowRuns []struct {
+					CreatedAt string `json:"created_at"`
+					UpdatedAt string `json:"updated_at"`
+				} `json:"workflow_runs"`
+			}{
+				WorkflowRuns: []struct {
+					CreatedAt string `json:"created_at"`
+					UpdatedAt string `json:"updated_at"`
+				}{
+					{
+						CreatedAt: baseTime.Add(-1 * time.Hour).Format(time.RFC3339),
+						UpdatedAt: baseTime.Add(-1*time.Hour + 10*time.Minute).Format(time.RFC3339), // 10 min
+					},
+					{
+						CreatedAt: baseTime.Add(-2 * time.Hour).Format(time.RFC3339),
+						UpdatedAt: baseTime.Add(-2*time.Hour + 15*time.Minute).Format(time.RFC3339), // 15 min
+					},
+					{
+						CreatedAt: baseTime.Add(-3 * time.Hour).Format(time.RFC3339),
+						UpdatedAt: baseTime.Add(-3*time.Hour + 20*time.Minute).Format(time.RFC3339), // 20 min
+					},
+					{
+						CreatedAt: baseTime.Add(-4 * time.Hour).Format(time.RFC3339),
+						UpdatedAt: baseTime.Add(-4*time.Hour + 25*time.Minute).Format(time.RFC3339), // 25 min
+					},
+					{
+						CreatedAt: baseTime.Add(-5 * time.Hour).Format(time.RFC3339),
+						UpdatedAt: baseTime.Add(-5*time.Hour + 30*time.Minute).Format(time.RFC3339), // 30 min
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(response)
+		}))
+		defer server.Close()
+
+		config := &Config{
+			Owner:            "owner",
+			Repo:             "repo",
+			GitHubToken:      "test-token",
+			GitHubAPIURL:     server.URL,
+			WorkflowFileName: "test.yml",
+		}
+
+		result := estimateWorkflowDuration(config)
+		// Durations: 10, 15, 20, 25, 30 min -> median is 20 min (index 2 of 5)
+		expected := 20 * time.Minute
+		if result != expected {
+			t.Errorf("estimateWorkflowDuration() = %v, want %v", result, expected)
+		}
+	})
+
+	t.Run("returns default when no runs available", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			response := struct {
+				WorkflowRuns []struct{} `json:"workflow_runs"`
+			}{
+				WorkflowRuns: []struct{}{},
+			}
+			json.NewEncoder(w).Encode(response)
+		}))
+		defer server.Close()
+
+		config := &Config{
+			Owner:            "owner",
+			Repo:             "repo",
+			GitHubToken:      "test-token",
+			GitHubAPIURL:     server.URL,
+			WorkflowFileName: "test.yml",
+		}
+
+		result := estimateWorkflowDuration(config)
+		expected := 15 * time.Minute // default
+		if result != expected {
+			t.Errorf("estimateWorkflowDuration() = %v, want %v (default)", result, expected)
+		}
+	})
+
+	t.Run("returns default on API error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		config := &Config{
+			Owner:            "owner",
+			Repo:             "repo",
+			GitHubToken:      "test-token",
+			GitHubAPIURL:     server.URL,
+			WorkflowFileName: "test.yml",
+		}
+
+		result := estimateWorkflowDuration(config)
+		expected := 15 * time.Minute // default
+		if result != expected {
+			t.Errorf("estimateWorkflowDuration() = %v, want %v (default)", result, expected)
+		}
+	})
+}
